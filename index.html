@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>TML / TMLCF Real_ID Attendance</title>
+<title>TML / TMLCF Real_ID Attendance — V8.1 TEST</title>
 <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 
 <style>
@@ -115,7 +115,21 @@ const postPin=document.getElementById('postPin');
 const orgEl=document.getElementById('organization');
 const postOrg=document.getElementById('postOrg');
 let readyEvent=false;
-orgEl.addEventListener('change',async()=>{await stopScanner();readyEvent=false;startEl.disabled=true;loadStatus();});
+let statusRequestId=0;
+const eventCache={};
+const EVENT_CACHE_MS=20000;
+let scanResumeTimer=null;
+let scanDeadlineTimer=null;
+let scanPollTimer=null;
+let scanGeneration=0;
+let scanCooldownUntil=0;
+orgEl.addEventListener('change',async()=>{
+  ++statusRequestId;
+  readyEvent=false;
+  startEl.disabled=true;
+  await stopScanner();
+  loadStatus();
+});
 let scannerPin='';
 
 const BACKEND_URL='https://script.google.com/macros/s/AKfycbwi3wv5U4-YY68YqAzPTV-yq9yb5SWQ7sGk5ywIgoe3FrXjRgKo5xw3BSUQNkYoR3ij/exec';
@@ -140,36 +154,57 @@ const tokEl=document.getElementById('tok');
 startEl.addEventListener('click',startScanner);
 switchEl.addEventListener('click',switchCamera);
 
-function loadStatus(){
-  eventEl.textContent='Checking active event…';
-  const timeout=setTimeout(function(){
-    if(eventEl.textContent==='Checking active event…'){
-      eventEl.textContent='EVENT REQUEST TIMED OUT';
-      show('error','CONNECTION ERROR','','','','The event status request did not complete.');
-    }
-  },12000);
-  readyEvent=false;startEl.disabled=true;
-  jsonp('status',{org:orgEl.value,pin:scannerPin},function(d){
-    clearTimeout(timeout);
-    eventEl.textContent=d.eventName||'NO ACTIVE EVENT';
-    eventDateEl.textContent=d.eventDate||'';
-    countEl.textContent=Number(d.count||0);
-    readyEvent=!!d.ok;
-    startEl.disabled=!readyEvent;
-
-    if(!d.ok){
-      show(
-        'error',
-        'NOT READY',
-        '',
-        '',
-        '',
-        d.message||'No active event.'
-      );
-    }
-  });
+function renderEvent(d, fromCache){
+  eventEl.textContent=d.eventName||(d.ok?'ACTIVE EVENT':'NO ACTIVE EVENT');
+  eventDateEl.textContent=d.eventDate||'';
+  countEl.textContent=Number(d.count||0);
+  readyEvent=!!d.ok;
+  startEl.disabled=!readyEvent;
+  if(d.ok){
+    show('ready','READY TO SCAN','','','',fromCache
+      ? 'Meeting loaded. Tap Start Scanner to begin.'
+      : 'Active event loaded. Tap Start Scanner to begin.');
+  }else{
+    show('error','NOT READY','','','',d.message||'No active event.');
+  }
 }
-
+function loadStatus(force=false){
+  const requestId=++statusRequestId;
+  const requestedOrg=orgEl.value;
+  const cached=eventCache[requestedOrg];
+  if(!force && cached && Date.now()-cached.at<EVENT_CACHE_MS){
+    renderEvent(cached.data,true);
+    return;
+  }
+  eventEl.textContent='Checking active event…';
+  eventDateEl.textContent='';
+  show('ready','LOADING EVENT','','','','Checking the active event.');
+  readyEvent=false;
+  startEl.disabled=true;
+  jsonp('status',{org:requestedOrg,pin:scannerPin},function(d){
+    if(requestId!==statusRequestId || requestedOrg!==orgEl.value)return;
+    if(d && d.ok)eventCache[requestedOrg]={at:Date.now(),data:d};
+    renderEvent(d||{ok:false,message:'Empty event response.'},false);
+  },function(message){
+    if(requestId!==statusRequestId || requestedOrg!==orgEl.value)return;
+    const fallback=eventCache[requestedOrg];
+    if(fallback && Date.now()-fallback.at<60000){
+      renderEvent(fallback.data,true);
+      msgEl.textContent='Using recently loaded event. Connection is being retried.';
+      return;
+    }
+    readyEvent=false;
+    startEl.disabled=true;
+    eventEl.textContent='EVENT CONNECTION FAILED';
+    show('error','CONNECTION ERROR','','','',message);
+  },18000);
+}
+function prefetchOtherOrganization(){
+  const other=orgEl.value==='TML'?'TMLCF':'TML';
+  jsonp('status',{org:other,pin:scannerPin},function(d){
+    if(d&&d.ok)eventCache[other]={at:Date.now(),data:d};
+  },function(){},18000);
+}
 window.addEventListener('load',function(){
   pinEl.focus();
 });
@@ -192,6 +227,7 @@ function unlockScanner(){
       document.getElementById('scannerHead').style.display='block';
       unlockAudio();
       loadStatus();
+      prefetchOtherOrganization();
     }else{
       scannerPin='';
       postPin.value='';
@@ -302,13 +338,14 @@ async function switchCamera(){
 }
 
 async function scan(text){
-  if(processing)return;
+  if(processing || Date.now()<scanCooldownUntil)return;
 
   const id=String(text||'').trim();
   if(!id)return;
 
   processing=true;
-  await stopScanner();
+  orgEl.disabled=true;
+  // Keep the camera running; processing prevents repeat reads.
 
   show(
     'ready',
@@ -323,49 +360,51 @@ async function scan(text){
 }
 
 function submit(id){
-  const token=
-    Date.now().toString(36)+'_'+
-    Math.random().toString(36).slice(2)+'_'+
-    Math.random().toString(36).slice(2);
-
+  const token=Date.now().toString(36)+'_'+Math.random().toString(36).slice(2)+'_'+Math.random().toString(36).slice(2);
+  const generation=++scanGeneration;
+  const submittedOrg=orgEl.value;
   formEl.action=BACKEND_URL;
   aidEl.value=id;
   tokEl.value=token;
   postPin.value=scannerPin;
-  postOrg.value=orgEl.value;
-  formEl.submit();
-
-  let tries=0;
-  clearInterval(poll);
-
-  poll=setInterval(function(){
-    tries++;
-
-    jsonp(
-      'result',
-      {token:token},
-      function(d){
-        if(d&&d.ready){
-          clearInterval(poll);
-          handleResult(d);
-        }
+  postOrg.value=submittedOrg;
+  try{formEl.submit();}catch(e){
+    finishScanTimeout('Could not submit attendance. Check the log before rescanning.');
+    return;
+  }
+  clearTimeout(scanDeadlineTimer);
+  clearTimeout(scanPollTimer);
+  const deadline=Date.now()+30000;
+  function checkResult(){
+    if(generation!==scanGeneration || !processing)return;
+    if(Date.now()>=deadline){finishScanTimeout('Confirmation timed out. Check Attendance Log before rescanning.');return;}
+    jsonp('result',{token,pin:scannerPin},function(d){
+      if(generation!==scanGeneration || !processing)return;
+      if(d&&d.ready){
+        clearTimeout(scanDeadlineTimer);
+        clearTimeout(scanPollTimer);
+        handleResult(d);
+      }else{
+        scanPollTimer=setTimeout(checkResult,850);
       }
-    );
-
-    if(tries>=24){
-      clearInterval(poll);
-      processing=false;
-
-      show(
-        'error',
-        'TIMEOUT',
-        '',
-        '',
-        '',
-        'Check Attendance Log before rescanning.'
-      );
-    }
-  },500);
+    },function(){
+      if(generation===scanGeneration && processing)scanPollTimer=setTimeout(checkResult,1000);
+    },6500);
+  }
+  scanDeadlineTimer=setTimeout(function(){
+    if(generation===scanGeneration&&processing)finishScanTimeout('Confirmation timed out. Check Attendance Log before rescanning.');
+  },30000);
+  scanPollTimer=setTimeout(checkResult,400);
+}
+function finishScanTimeout(message){
+  ++scanGeneration;
+  clearTimeout(scanDeadlineTimer);
+  clearTimeout(scanPollTimer);
+  processing=false;
+  orgEl.disabled=false;
+  show('error','CONFIRMATION DELAYED','','','',message);
+  // Do not auto-resume on uncertain writes: avoids accidental repeat submissions.
+  if(running){stopScanner();}
 }
 
 function unlockAudio(){
@@ -428,11 +467,20 @@ function resultFeedback(state,title){
 }
 
 function handleResult(r){
+  scanCooldownUntil=Date.now()+(r.state==='success'?1200:1800);
+  clearTimeout(scanDeadlineTimer);
+  clearTimeout(scanPollTimer);
   processing=false;
+  orgEl.disabled=false;
   resultFeedback(r.state,r.title);
   
 
   countEl.textContent=Number(r.count||0);
+  // Update the cached count without requesting the spreadsheet again.
+  if(eventCache[orgEl.value] && r.eventId===eventCache[orgEl.value].data.eventId){
+    eventCache[orgEl.value].data.count=Number(r.count||0);
+    eventCache[orgEl.value].at=Date.now();
+  }
 
   if(r.eventName){
     eventEl.textContent=r.eventName;
@@ -457,50 +505,51 @@ function handleResult(r){
     r.message||''
   );
 
-  setTimeout(function(){
-    if(!processing){
+  clearTimeout(scanResumeTimer);
+  scanResumeTimer=setTimeout(function(){
+    if(!processing && running && readyEvent){
+      show('ready','READY TO SCAN','','','','Hold the next Real_ID QR code inside the camera box.');
+    }else if(!processing && readyEvent && !running){
       startScanner();
     }
-  },r.state==='success'?1800:2800);
+  },r.state==='success'?1100:1700);
 }
 
-function jsonp(action,params,cb){
-  const name=
-    'tmlcb_'+
-    Date.now().toString(36)+'_'+
-    Math.random().toString(36).slice(2);
-
-  const s=document.createElement('script');
-
-  window[name]=function(d){
-    try{
-      cb(d);
-    }finally{
-      delete window[name];
-      if(s.parentNode)s.parentNode.removeChild(s);
+function jsonp(action,params,cb,onError,timeoutMs){
+  const name='tmlcb_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2);
+  const script=document.createElement('script');
+  let settled=false;
+  let timer;
+  function cleanup(){
+    clearTimeout(timer);
+    try{delete window[name];}catch(e){window[name]=undefined;}
+    if(script.parentNode)script.parentNode.removeChild(script);
+  }
+  function fail(message){
+    if(settled)return;
+    settled=true;
+    cleanup();
+    if(typeof onError==='function')onError(message);
+    else if(action==='auth'){
+      unlockEl.disabled=false;
+      unlockEl.textContent='Unlock Scanner';
+      gateMsg.textContent=message;
     }
+  }
+  window[name]=function(data){
+    if(settled)return;
+    settled=true;
+    cleanup();
+    cb(data);
   };
-
   const q=new URLSearchParams();
   q.set('action',action);
   q.set('callback',name);
-
-  Object.keys(params||{}).forEach(function(k){
-    q.set(k,params[k]);
-  });
-
-  s.src=BACKEND_URL+'?'+q.toString();
-
-  s.onerror=function(){
-    if(action==='status'){
-      eventEl.textContent='EVENT CONNECTION FAILED';
-      show('error','CONNECTION ERROR','','','','Unable to load event status from Apps Script.');
-    }
-    delete window[name];
-    if(s.parentNode)s.parentNode.removeChild(s);
-  };
-
-  document.body.appendChild(s);
+  Object.keys(params||{}).forEach(function(k){q.set(k,params[k]);});
+  script.src=BACKEND_URL+'?'+q.toString();
+  script.onerror=function(){fail('Unable to reach the attendance service. Please retry.');};
+  timer=setTimeout(function(){fail('The attendance service did not respond in time. Please retry.');},timeoutMs||20000);
+  document.body.appendChild(script);
 }
 
 function show(state,t,m,a,tm,msg){
