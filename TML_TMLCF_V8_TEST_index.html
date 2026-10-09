@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>TML / TMLCF Real_ID Attendance</title>
+<script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+
+<style>
+:root{--g:#BB8D0A;--ok:#18794e;--warn:#a86400;--err:#b42318}
+*{box-sizing:border-box}
+body{margin:0;background:#f3f4f6;font-family:Arial,sans-serif;color:#111}
+.page{max-width:680px;margin:auto;padding:14px}
+.head{background:#111;color:#fff;border-bottom:6px solid var(--g);padding:18px;text-align:center;border-radius:14px 14px 0 0}
+h1{font-size:23px;margin:0}
+.event{font-weight:800;margin-top:10px;font-size:18px}
+.event-date{font-weight:600;margin-top:5px;font-size:16px;color:#f2d779}
+.counter{background:#fff;text-align:center;padding:12px}
+.label{font-size:13px;font-weight:700;letter-spacing:1px}
+#count{font-size:44px;font-weight:800}
+.card{background:#fff;padding:14px;border-radius:0 0 14px 14px;box-shadow:0 3px 14px #0002}
+#reader{width:100%;overflow:hidden;border-radius:10px}
+.instruction{text-align:center;font-weight:700;margin:10px 0 14px}
+.buttons{display:flex;gap:10px;margin-top:12px}
+button{flex:1;min-height:50px;border:0;border-radius:10px;font-size:16px;font-weight:700}
+#start{background:var(--g);color:#111}
+#switch{background:#111;color:#fff}
+.status{margin-top:14px;padding:18px;border-radius:14px;text-align:center;min-height:150px;background:#fff;box-shadow:0 3px 14px #0002;border-top:7px solid var(--g)}
+.status.success{border-color:var(--ok)}
+.status.duplicate{border-color:var(--warn)}
+.status.error{border-color:var(--err)}
+.title{font-size:22px;font-weight:800}
+.member{font-size:27px;font-weight:800;margin:8px 0}
+.line{font-size:16px;margin:6px}
+.small{text-align:center;color:#666;font-size:12px;margin-top:12px}
+iframe,form{display:none}
+.gate{background:#fff;padding:18px;border-radius:0 0 14px 14px;box-shadow:0 3px 14px #0002;text-align:center}
+.gate input{width:100%;max-width:300px;font-size:24px;padding:12px;text-align:center;border:2px solid #bbb;border-radius:10px;letter-spacing:3px}
+.gate button{margin-top:12px;max-width:300px;background:var(--g)}
+.gateMsg{margin-top:10px;font-weight:700;color:var(--err)}
+.hidden{display:none!important}
+</style>
+</head>
+
+<body>
+<div class="page">
+
+<div class="head" id="scannerHead" style="display:none">
+  <h1>TML Real_ID Attendance</h1>
+  <div class="event" id="event">Loading active event…</div>
+  <div class="event-date" id="eventDate"></div>
+</div>
+
+<div id="gate" class="gate">
+<div class="title">AUTHORIZED SCANNER ACCESS</div>
+<div class="line">Enter the TML Scanner PIN to continue.</div>
+<input id="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="12" autocomplete="off">
+<br><button id="unlock" type="button">Unlock Scanner</button>
+<div id="gateMsg" class="gateMsg"></div>
+</div>
+<div id="appContent" class="hidden">
+<div class="card" style="border-radius:10px;margin:10px 0">
+  <label for="organization" style="display:block;font-weight:bold;margin-bottom:8px">Select organization</label>
+  <select id="organization" style="width:100%;padding:13px;font-size:17px;border-radius:8px">
+    <option value="TML">TML — Chapter</option>
+    <option value="TMLCF">TMLCF — Foundation</option>
+  </select>
+</div>
+<div class="counter">
+  <div class="label">BROTHERS CHECKED IN</div>
+  <div id="count">0</div>
+</div>
+
+<div class="card">
+  <div class="instruction">
+    Tap Start Scanner, then scan the Brother's existing Real_ID QR code.
+  </div>
+
+  <div id="reader"></div>
+
+  <div class="buttons">
+    <button id="start" type="button">Start Scanner</button>
+    <button id="switch" type="button">Switch Camera</button>
+  </div>
+</div>
+
+<div id="box" class="status">
+  <div id="title" class="title">READY</div>
+  <div id="member" class="member"></div>
+  <div id="alpha" class="line"></div>
+  <div id="time" class="line"></div>
+  <div id="msg" class="line">Tap Start Scanner to begin.</div>
+</div>
+
+</div><div class="small">
+  Uses existing TML Real_ID QR codes without modification.
+</div>
+
+<iframe id="postFrame" name="postFrame"></iframe>
+
+<form id="form" method="POST" target="postFrame">
+  <input id="aid" name="alpha_id">
+  <input id="tok" name="token"><input id="postPin" name="pin"><input id="postOrg" name="org">
+</form>
+
+</div>
+
+<script>
+const gate=document.getElementById('gate');
+const pinEl=document.getElementById('pin');
+const unlockEl=document.getElementById('unlock');
+const gateMsg=document.getElementById('gateMsg');
+const appContent=document.getElementById('appContent');
+const postPin=document.getElementById('postPin');
+const orgEl=document.getElementById('organization');
+const postOrg=document.getElementById('postOrg');
+let readyEvent=false;
+orgEl.addEventListener('change',async()=>{await stopScanner();readyEvent=false;startEl.disabled=true;loadStatus();});
+let scannerPin='';
+
+const BACKEND_URL='https://script.google.com/macros/s/AKfycbwi3wv5U4-YY68YqAzPTV-yq9yb5SWQ7sGk5ywIgoe3FrXjRgKo5xw3BSUQNkYoR3ij/exec';
+
+let qr=null,cameras=[],cam=0,running=false,processing=false,poll=null,audioCtx=null;
+
+const eventEl=document.getElementById('event');
+const eventDateEl=document.getElementById('eventDate');
+const countEl=document.getElementById('count');
+const startEl=document.getElementById('start');
+const switchEl=document.getElementById('switch');
+const boxEl=document.getElementById('box');
+const titleEl=document.getElementById('title');
+const memberEl=document.getElementById('member');
+const alphaEl=document.getElementById('alpha');
+const timeEl=document.getElementById('time');
+const msgEl=document.getElementById('msg');
+const formEl=document.getElementById('form');
+const aidEl=document.getElementById('aid');
+const tokEl=document.getElementById('tok');
+
+startEl.addEventListener('click',startScanner);
+switchEl.addEventListener('click',switchCamera);
+
+function loadStatus(){
+  eventEl.textContent='Checking active event…';
+  const timeout=setTimeout(function(){
+    if(eventEl.textContent==='Checking active event…'){
+      eventEl.textContent='EVENT REQUEST TIMED OUT';
+      show('error','CONNECTION ERROR','','','','The event status request did not complete.');
+    }
+  },12000);
+  readyEvent=false;startEl.disabled=true;
+  jsonp('status',{org:orgEl.value,pin:scannerPin},function(d){
+    clearTimeout(timeout);
+    eventEl.textContent=d.eventName||'NO ACTIVE EVENT';
+    eventDateEl.textContent=d.eventDate||'';
+    countEl.textContent=Number(d.count||0);
+    readyEvent=!!d.ok;
+    startEl.disabled=!readyEvent;
+
+    if(!d.ok){
+      show(
+        'error',
+        'NOT READY',
+        '',
+        '',
+        '',
+        d.message||'No active event.'
+      );
+    }
+  });
+}
+
+window.addEventListener('load',function(){
+  pinEl.focus();
+});
+
+function unlockScanner(){
+  const pin=String(pinEl.value||'').trim();
+  gateMsg.textContent='';
+  if(!pin){gateMsg.textContent='Enter the scanner PIN.';return;}
+  unlockEl.disabled=true;
+  unlockEl.textContent='Checking…';
+
+  jsonp('auth',{pin},d=>{
+    unlockEl.disabled=false;
+    unlockEl.textContent='Unlock Scanner';
+    if(d&&d.ok){
+      scannerPin=pin;
+      postPin.value=pin;
+      gate.classList.add('hidden');
+      appContent.classList.remove('hidden');
+      document.getElementById('scannerHead').style.display='block';
+      unlockAudio();
+      loadStatus();
+    }else{
+      scannerPin='';
+      postPin.value='';
+      pinEl.value='';
+      gateMsg.textContent='Incorrect scanner PIN.';
+      pinEl.focus();
+    }
+  });
+}
+unlockEl.addEventListener('click',unlockScanner);
+pinEl.addEventListener('keydown',e=>{if(e.key==='Enter')unlockScanner();});
+
+async function startScanner(){unlockAudio();
+  if(!readyEvent)return;
+  if(processing||running)return;
+
+  try{
+    if(!cameras.length){
+      cameras=await Html5Qrcode.getCameras();
+
+      if(!cameras.length){
+        throw Error('No camera detected.');
+      }
+
+      const r=cameras.findIndex(
+        c=>/back|rear|environment/i.test(c.label||'')
+      );
+
+      cam=r>=0?r:0;
+    }
+
+    if(!qr){
+      qr=new Html5Qrcode('reader');
+    }
+
+    await qr.start(
+      cameras[cam].id,
+      {
+        fps:10,
+        qrbox:(w,h)=>{
+          const e=Math.floor(Math.min(w,h)*.72);
+          return {width:e,height:e};
+        }
+      },
+      scan,
+      ()=>{}
+    );
+
+    running=true;
+    startEl.textContent='Scanner Running';
+
+    show(
+      'ready',
+      'READY TO SCAN',
+      '',
+      '',
+      '',
+      'Hold the existing Real_ID QR code inside the camera box.'
+    );
+
+  }catch(e){
+    running=false;
+    startEl.textContent='Start Scanner';
+
+    show(
+      'error',
+      'CAMERA ERROR',
+      '',
+      '',
+      '',
+      err(e)
+    );
+  }
+}
+
+async function stopScanner(){
+  if(qr&&running){
+    try{await qr.stop();}catch(e){}
+    running=false;
+    startEl.textContent='Start Scanner';
+  }
+}
+
+async function switchCamera(){
+  if(processing)return;
+
+  try{
+    if(!cameras.length){
+      cameras=await Html5Qrcode.getCameras();
+    }
+
+    if(cameras.length<2)return;
+
+    await stopScanner();
+    cam=(cam+1)%cameras.length;
+    await startScanner();
+
+  }catch(e){
+    show(
+      'error',
+      'CAMERA ERROR',
+      '',
+      '',
+      '',
+      err(e)
+    );
+  }
+}
+
+async function scan(text){
+  if(processing)return;
+
+  const id=String(text||'').trim();
+  if(!id)return;
+
+  processing=true;
+  await stopScanner();
+
+  show(
+    'ready',
+    'PROCESSING…',
+    '',
+    'Alpha ID: '+id,
+    '',
+    'Checking attendance.'
+  );
+
+  submit(id);
+}
+
+function submit(id){
+  const token=
+    Date.now().toString(36)+'_'+
+    Math.random().toString(36).slice(2)+'_'+
+    Math.random().toString(36).slice(2);
+
+  formEl.action=BACKEND_URL;
+  aidEl.value=id;
+  tokEl.value=token;
+  postPin.value=scannerPin;
+  postOrg.value=orgEl.value;
+  formEl.submit();
+
+  let tries=0;
+  clearInterval(poll);
+
+  poll=setInterval(function(){
+    tries++;
+
+    jsonp(
+      'result',
+      {token:token},
+      function(d){
+        if(d&&d.ready){
+          clearInterval(poll);
+          handleResult(d);
+        }
+      }
+    );
+
+    if(tries>=24){
+      clearInterval(poll);
+      processing=false;
+
+      show(
+        'error',
+        'TIMEOUT',
+        '',
+        '',
+        '',
+        'Check Attendance Log before rescanning.'
+      );
+    }
+  },500);
+}
+
+function unlockAudio(){
+  try{
+    const C=window.AudioContext||window.webkitAudioContext;
+    if(!C)return;
+    if(!audioCtx)audioCtx=new C();
+    if(audioCtx.state==='suspended')audioCtx.resume();
+    // Silent oscillator during the user's Start Scanner tap unlocks audio on Android Chrome.
+    const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+    g.gain.value=.00001;
+    o.connect(g);g.connect(audioCtx.destination);
+    o.start();o.stop(audioCtx.currentTime+.02);
+  }catch(e){}
+}
+
+function playTone(freq,duration,delay,volume){
+  try{
+    if(!audioCtx)return;
+    if(audioCtx.state==='suspended')audioCtx.resume();
+    const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+    const s=audioCtx.currentTime+(delay||0);
+    o.type='sine';
+    o.frequency.setValueAtTime(freq,s);
+    g.gain.setValueAtTime(.0001,s);
+    g.gain.exponentialRampToValueAtTime(volume||.35,s+.015);
+    g.gain.exponentialRampToValueAtTime(.0001,s+duration);
+    o.connect(g);g.connect(audioCtx.destination);
+    o.start(s);o.stop(s+duration+.03);
+  }catch(e){}
+}
+
+function resultFeedback(state,title){
+  const t=String(title||'').toUpperCase();
+
+  if(state==='success'){
+    playTone(659,.14,0,.40);
+    playTone(880,.20,.15,.42);
+    if(navigator.vibrate)navigator.vibrate(80);
+    return;
+  }
+
+  if(state==='duplicate'){
+    playTone(494,.12,0,.42);
+    playTone(494,.12,.18,.42);
+    if(navigator.vibrate)navigator.vibrate([90,80,90]);
+    return;
+  }
+
+  if(state==='error'){
+    if(t.includes('MEMBER NOT FOUND')){
+      playTone(330,.18,0,.45);
+      playTone(220,.30,.20,.48);
+      if(navigator.vibrate)navigator.vibrate(350);
+    }else{
+      playTone(247,.32,0,.45);
+      if(navigator.vibrate)navigator.vibrate(300);
+    }
+  }
+}
+
+function handleResult(r){
+  processing=false;
+  resultFeedback(r.state,r.title);
+  
+
+  countEl.textContent=Number(r.count||0);
+
+  if(r.eventName){
+    eventEl.textContent=r.eventName;
+  }
+
+  if(r.eventDate){
+    eventDateEl.textContent=r.eventDate;
+  }
+
+  const t=r.time
+    ? (r.state==='duplicate'
+        ? 'Original check-in: '
+        : 'Checked in: ')+r.time
+    : '';
+
+  show(
+    r.state||'error',
+    r.title||'ATTENDANCE',
+    r.memberName||'',
+    r.alphaId?'Alpha ID: '+r.alphaId:'',
+    t,
+    r.message||''
+  );
+
+  setTimeout(function(){
+    if(!processing){
+      startScanner();
+    }
+  },r.state==='success'?1800:2800);
+}
+
+function jsonp(action,params,cb){
+  const name=
+    'tmlcb_'+
+    Date.now().toString(36)+'_'+
+    Math.random().toString(36).slice(2);
+
+  const s=document.createElement('script');
+
+  window[name]=function(d){
+    try{
+      cb(d);
+    }finally{
+      delete window[name];
+      if(s.parentNode)s.parentNode.removeChild(s);
+    }
+  };
+
+  const q=new URLSearchParams();
+  q.set('action',action);
+  q.set('callback',name);
+
+  Object.keys(params||{}).forEach(function(k){
+    q.set(k,params[k]);
+  });
+
+  s.src=BACKEND_URL+'?'+q.toString();
+
+  s.onerror=function(){
+    if(action==='status'){
+      eventEl.textContent='EVENT CONNECTION FAILED';
+      show('error','CONNECTION ERROR','','','','Unable to load event status from Apps Script.');
+    }
+    delete window[name];
+    if(s.parentNode)s.parentNode.removeChild(s);
+  };
+
+  document.body.appendChild(s);
+}
+
+function show(state,t,m,a,tm,msg){
+  boxEl.className='status '+(state||'ready');
+  titleEl.textContent=t||'';
+  memberEl.textContent=m||'';
+  alphaEl.textContent=a||'';
+  timeEl.textContent=tm||'';
+  msgEl.textContent=msg||'';
+}
+
+function err(e){
+  return e?(e.message||String(e)):'Unknown error.';
+}
+</script>
+</body>
+</html>
