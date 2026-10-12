@@ -64,8 +64,13 @@ iframe,form{display:none}
 </div>
 <div id="appContent" class="hidden">
 <div id="diagnostics" aria-live="polite">
-<strong>V8.1 TEST — Performance Diagnostics</strong>
-<div class="metric">PIN authentication: <span id="diagAuth">Not measured</span></div>
+<strong>V8.1 TEST — Browser + Backend Diagnostics</strong>
+<div class="metric">PIN authentication (browser): <span id="diagAuth">Not measured</span></div>
+<div class="metric">Backend authentication: <span id="diagServer">Not measured</span></div>
+<div class="metric">Spreadsheet access: <span id="diagSpreadsheet">Not measured</span></div>
+<div class="metric">Settings retrieval: <span id="diagSettings">Not measured</span></div>
+<div class="metric">PIN hash validation: <span id="diagHash">Not measured</span></div>
+<div class="metric">Other browser/request overhead: <span id="diagOverhead">Not measured</span></div>
 <div class="metric">Active event loading: <span id="diagEvent">Not measured</span></div>
 <div class="metric">Unlock to event ready: <span id="diagTotal">Not measured</span></div>
 <div class="hint">Browser elapsed times include network latency. No PIN or member data is recorded by this panel.</div>
@@ -256,6 +261,15 @@ function unlockScanner(){
 
   jsonp('auth',{pin},d=>{
     diagnosticSet('diagAuth',diagnosticMs(diagnosticClock()-unlockStartedAt));
+    if(d && d.diagnostics){
+      const t=d.diagnostics;
+      const browserMs=diagnosticClock()-unlockStartedAt;
+      diagnosticSet('diagServer',diagnosticMs(Number(t.totalMs)));
+      diagnosticSet('diagSpreadsheet',diagnosticMs(Number(t.spreadsheetMs)));
+      diagnosticSet('diagSettings',diagnosticMs(Number(t.settingsMs)));
+      diagnosticSet('diagHash',diagnosticMs(Number(t.hashMs)));
+      diagnosticSet('diagOverhead',diagnosticMs(Math.max(0,browserMs-Number(t.totalMs))));
+    }
     unlockEl.disabled=false;
     unlockEl.textContent='Unlock Scanner';
     if(d&&d.ok){
