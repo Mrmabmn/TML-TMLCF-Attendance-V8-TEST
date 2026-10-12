@@ -72,6 +72,13 @@ iframe,form{display:none}
 <div class="metric">PIN hash validation: <span id="diagHash">Not measured</span></div>
 <div class="metric">Other browser/request overhead: <span id="diagOverhead">Not measured</span></div>
 <div class="metric">Active event loading: <span id="diagEvent">Not measured</span></div>
+<div class="metric">Event backend total: <span id="diagStatusBackend">Not measured</span></div>
+<div class="metric">Event PIN recheck: <span id="diagStatusPin">Not measured</span></div>
+<div class="metric">Active event lookup: <span id="diagStatusEvent">Not measured</span></div>
+<div class="metric">Event sheet read: <span id="diagStatusEventSheet">Not measured</span></div>
+<div class="metric">Event cache hit: <span id="diagStatusCache">Not measured</span></div>
+<div class="metric">Attendance count: <span id="diagStatusCount">Not measured</span></div>
+<div class="metric">Attendance log read: <span id="diagStatusLog">Not measured</span></div>
 <div class="metric">Unlock to event ready: <span id="diagTotal">Not measured</span></div>
 <div class="hint">Browser elapsed times include network latency. No PIN or member data is recorded by this panel.</div>
 </div>
@@ -221,6 +228,16 @@ function loadStatus(force=false){
   startEl.disabled=true;
   jsonp('status',{org:requestedOrg,pin:scannerPin},function(d){
     if(requestId!==statusRequestId || requestedOrg!==orgEl.value)return;
+    if(d && d.diagnostics){
+      const t=d.diagnostics;
+      diagnosticSet('diagStatusBackend',diagnosticMs(t.totalMs));
+      diagnosticSet('diagStatusPin',diagnosticMs(t.pinMs));
+      diagnosticSet('diagStatusEvent',diagnosticMs(t.eventMs));
+      diagnosticSet('diagStatusEventSheet',diagnosticMs(t.eventSheetMs));
+      diagnosticSet('diagStatusCache',t.eventCacheHit?'Yes':'No');
+      diagnosticSet('diagStatusCount',diagnosticMs(t.countMs));
+      diagnosticSet('diagStatusLog',diagnosticMs(t.countSheetMs));
+    }
     if(d && d.ok)eventCache[requestedOrg]={at:Date.now(),data:d};
     renderEvent(d||{ok:false,message:'Empty event response.'},false);
     diagnosticEventDone('network');
