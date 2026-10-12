@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>TML / TMLCF Real_ID Attendance — V8.1 TEST</title>
+<title>TML / TMLCF Real_ID Attendance — V8.1 TEST Diagnostics</title>
 <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 
 <style>
@@ -39,6 +39,10 @@ iframe,form{display:none}
 .gate button{margin-top:12px;max-width:300px;background:var(--g)}
 .gateMsg{margin-top:10px;font-weight:700;color:var(--err)}
 .hidden{display:none!important}
+#diagnostics{background:#eef4ff;border:1px solid #a6bce7;border-radius:10px;padding:12px;margin:12px 0;font-size:14px;line-height:1.7}
+#diagnostics strong{display:block;font-size:15px}
+#diagnostics .metric{font-variant-numeric:tabular-nums}
+#diagnostics .hint{color:#42526a;font-size:12px}
 </style>
 </head>
 
@@ -59,6 +63,13 @@ iframe,form{display:none}
 <div id="gateMsg" class="gateMsg"></div>
 </div>
 <div id="appContent" class="hidden">
+<div id="diagnostics" aria-live="polite">
+<strong>V8.1 TEST — Performance Diagnostics</strong>
+<div class="metric">PIN authentication: <span id="diagAuth">Not measured</span></div>
+<div class="metric">Active event loading: <span id="diagEvent">Not measured</span></div>
+<div class="metric">Unlock to event ready: <span id="diagTotal">Not measured</span></div>
+<div class="hint">Browser elapsed times include network latency. No PIN or member data is recorded by this panel.</div>
+</div>
 <div class="card" style="border-radius:10px;margin:10px 0">
   <label for="organization" style="display:block;font-weight:bold;margin-bottom:8px">Select organization</label>
   <select id="organization" style="width:100%;padding:13px;font-size:17px;border-radius:8px">
@@ -118,6 +129,25 @@ let readyEvent=false;
 let statusRequestId=0;
 const eventCache={};
 const EVENT_CACHE_MS=20000;
+// TEST-only diagnostics: client-side timing, no extra backend requests.
+let unlockStartedAt=null;
+let eventStartedAt=null;
+let initialEventPending=false;
+const diagnosticClock=()=>performance.now();
+const diagnosticMs=ms=>Number.isFinite(ms)?(ms/1000).toFixed(2)+' s':'Not measured';
+function diagnosticSet(id,value){document.getElementById(id).textContent=value;}
+function diagnosticEventDone(source){
+  const now=diagnosticClock();
+  if(eventStartedAt!==null){
+    diagnosticSet('diagEvent',diagnosticMs(now-eventStartedAt)+' ('+source+')');
+    eventStartedAt=null;
+  }
+  if(initialEventPending && unlockStartedAt!==null){
+    diagnosticSet('diagTotal',diagnosticMs(now-unlockStartedAt));
+    initialEventPending=false;
+  }
+}
+
 let scanResumeTimer=null;
 let scanDeadlineTimer=null;
 let scanPollTimer=null;
@@ -171,9 +201,12 @@ function renderEvent(d, fromCache){
 function loadStatus(force=false){
   const requestId=++statusRequestId;
   const requestedOrg=orgEl.value;
+  eventStartedAt=diagnosticClock();
+  diagnosticSet('diagEvent','Loading '+requestedOrg+'…');
   const cached=eventCache[requestedOrg];
   if(!force && cached && Date.now()-cached.at<EVENT_CACHE_MS){
     renderEvent(cached.data,true);
+    diagnosticEventDone('cache');
     return;
   }
   eventEl.textContent='Checking active event…';
@@ -185,18 +218,21 @@ function loadStatus(force=false){
     if(requestId!==statusRequestId || requestedOrg!==orgEl.value)return;
     if(d && d.ok)eventCache[requestedOrg]={at:Date.now(),data:d};
     renderEvent(d||{ok:false,message:'Empty event response.'},false);
+    diagnosticEventDone('network');
   },function(message){
     if(requestId!==statusRequestId || requestedOrg!==orgEl.value)return;
     const fallback=eventCache[requestedOrg];
     if(fallback && Date.now()-fallback.at<60000){
       renderEvent(fallback.data,true);
       msgEl.textContent='Using recently loaded event. Connection is being retried.';
+      diagnosticEventDone('fallback cache');
       return;
     }
     readyEvent=false;
     startEl.disabled=true;
     eventEl.textContent='EVENT CONNECTION FAILED';
     show('error','CONNECTION ERROR','','','',message);
+    diagnosticEventDone('error');
   },18000);
 }
 function prefetchOtherOrganization(){
@@ -215,8 +251,11 @@ function unlockScanner(){
   if(!pin){gateMsg.textContent='Enter the scanner PIN.';return;}
   unlockEl.disabled=true;
   unlockEl.textContent='Checking…';
+  unlockStartedAt=diagnosticClock();
+  initialEventPending=true;
 
   jsonp('auth',{pin},d=>{
+    diagnosticSet('diagAuth',diagnosticMs(diagnosticClock()-unlockStartedAt));
     unlockEl.disabled=false;
     unlockEl.textContent='Unlock Scanner';
     if(d&&d.ok){
@@ -233,6 +272,7 @@ function unlockScanner(){
       postPin.value='';
       pinEl.value='';
       gateMsg.textContent='Incorrect scanner PIN.';
+      initialEventPending=false;
       pinEl.focus();
     }
   });
